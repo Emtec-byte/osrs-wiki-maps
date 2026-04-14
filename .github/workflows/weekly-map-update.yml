@@ -121,7 +121,7 @@ jobs:
           JAR_PATH="${matches[0]}"
           bash .github/scripts/run_with_resource_monitor.sh \
             "generate-base-tiles" \
-            java -Xmx6g -Xms2g -jar "$JAR_PATH"
+            java -Xmx4g -Xms1g -jar "$JAR_PATH"
 
       - name: Stitch final map output
         if: steps.version_check.outputs.needs_update == 'true'
