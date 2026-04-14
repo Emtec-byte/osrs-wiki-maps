@@ -51,7 +51,7 @@ def get_cache_info() -> tuple[int, str, int | None]:
             latest = date
             cache_id = cache["id"]
             builds = cache.get("builds") or []
-            build_number = builds[0]["major"] if builds else None
+            build_number = builds[0].get("major") if builds else None
 
     if cache_id == -1:
         raise RuntimeError("No suitable OSRS cache found with sufficient XTEA keys")
