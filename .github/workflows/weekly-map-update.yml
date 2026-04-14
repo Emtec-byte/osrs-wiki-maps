@@ -1,0 +1,102 @@
+name: Weekly OSRS Map Update
+
+on:
+  schedule:
+    # Wednesdays at 14:00 UTC (after typical OSRS Wednesday update window)
+    - cron: '0 14 * * 3'
+  workflow_dispatch:
+    inputs:
+      force_update:
+        description: 'Force map regeneration even when cache version is unchanged'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  generate-and-publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 11
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '11'
+          cache: maven
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install Maven dependencies
+        run: mvn install -f pom.xml
+
+      - name: Package Maven project
+        run: mvn package -f pom.xml
+
+      - name: Download latest cache
+        run: python scripts/cache.py
+
+      - name: Compare cache version with tiles repository
+        id: version_check
+        env:
+          FORCE_UPDATE: ${{ github.event.inputs.force_update || 'false' }}
+          VERSION_URL: https://raw.githubusercontent.com/Emtec-byte/osrs-map-tiles/main/cache-version.json
+        run: |
+          set -euo pipefail
+
+          CURRENT_VERSION="$(tr -d '\r\n' < ./data/versions/version.txt)"
+          REMOTE_VERSION=""
+
+          if curl -fsSL "$VERSION_URL" -o /tmp/cache-version.json; then
+            REMOTE_VERSION="$(python3 -c "import json; print(json.load(open('/tmp/cache-version.json', 'r', encoding='utf-8')).get('version', ''))")"
+          else
+            echo "cache-version.json not found in tiles repo (likely first run)."
+          fi
+
+          NEEDS_UPDATE="true"
+          if [ "$FORCE_UPDATE" = "true" ]; then
+            echo "force_update=true, regeneration will run."
+          elif [ "$CURRENT_VERSION" = "$REMOTE_VERSION" ] && [ -n "$REMOTE_VERSION" ]; then
+            NEEDS_UPDATE="false"
+          fi
+
+          echo "current_version=$CURRENT_VERSION" >> "$GITHUB_OUTPUT"
+          echo "remote_version=$REMOTE_VERSION" >> "$GITHUB_OUTPUT"
+          echo "needs_update=$NEEDS_UPDATE" >> "$GITHUB_OUTPUT"
+
+          echo "Current cache version: $CURRENT_VERSION"
+          echo "Remote cache version: ${REMOTE_VERSION:-<none>}"
+          echo "Needs update: $NEEDS_UPDATE"
+
+      - name: Generate base tiles
+        if: steps.version_check.outputs.needs_update == 'true'
+        timeout-minutes: 120
+        run: java -Xmx6g -Xms2g -jar ./osrs-wiki-maps/target/osrs-wiki-maps-*-shaded.jar
+
+      - name: Stitch final map output
+        if: steps.version_check.outputs.needs_update == 'true'
+        timeout-minutes: 120
+        run: python scripts/stitch.py
+
+      - name: Make push helper executable
+        if: steps.version_check.outputs.needs_update == 'true'
+        run: chmod +x .github/scripts/push_tiles.sh
+
+      - name: Push updated map assets to osrs-map-tiles
+        if: steps.version_check.outputs.needs_update == 'true'
+        env:
+          TILES_REPO_TOKEN: ${{ secrets.TILES_REPO_TOKEN }}
+        run: .github/scripts/push_tiles.sh "${{ steps.version_check.outputs.current_version }}" "$TILES_REPO_TOKEN"
+
+      - name: Skip generation when cache is unchanged
+        if: steps.version_check.outputs.needs_update != 'true'
+        run: echo "No cache change detected and force_update is false. Skipping generation and publish steps."
