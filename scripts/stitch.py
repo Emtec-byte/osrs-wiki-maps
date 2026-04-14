@@ -1,3 +1,4 @@
+import gc
 import json
 import os.path
 import glob
@@ -7,6 +8,59 @@ import numpy as np
 
 PADDING = 64
 PX_PER_TILE = 4
+
+
+def get_rss_mib():
+    """
+    Best-effort current-process RSS in MiB for GitHub Actions diagnostics.
+    """
+    try:
+        import psutil  # type: ignore
+
+        return psutil.Process().memory_info().rss / (1024 * 1024)
+    except Exception:
+        pass
+
+    status_path = "/proc/self/status"
+    if os.path.exists(status_path):
+        try:
+            with open(status_path, "rt", encoding="utf-8") as file:
+                for line in file:
+                    if line.startswith("VmRSS:"):
+                        return int(line.split()[1]) / 1024
+        except OSError:
+            pass
+
+    return None
+
+
+def log_rss(stage, map_id=None, plane=None):
+    """
+    Print unbuffered stitch progress with current RSS when available.
+    """
+    parts = [stage]
+    if map_id is not None:
+        parts.append(f"map_id={map_id}")
+    if plane is not None:
+        parts.append(f"plane={plane}")
+
+    rss_mib = get_rss_mib()
+    if rss_mib is not None:
+        parts.append(f"rss_mib={rss_mib:.1f}")
+
+    print(" ".join(parts), flush=True)
+
+
+def close_image(image):
+    """
+    Close PIL-backed image resources when supported.
+    """
+    if image is None:
+        return
+
+    close = getattr(image, "close", None)
+    if callable(close):
+        close()
 
 
 def debug_defn(tile_path):
@@ -389,71 +443,122 @@ def render_map(map_id, defn, icons, icon_sprites, base_tiles_dir, out_tiles_dir)
     map_width = (map_high_x - map_low_x + 1) * PX_PER_TILE * 64
 
     plane_0_map = None
-    for plane in range(planes):
-        print(f"{map_id=}, {plane=}")
-        valid_icons = []
-        plane_image = Image.new("RGB", (map_width + 512, map_height + 512))
+    log_rss("render-map-start", map_id=map_id)
+    try:
+        for plane in range(planes):
+            log_rss("plane-start", map_id=map_id, plane=plane)
+            valid_icons = []
+            plane_image = Image.new("RGB", (map_width + 512, map_height + 512))
+            data = None
+            mask = None
 
-        for region in defn["regionList"]:
-            plane_image, area_icons = render_region(
-                plane, region, icons, plane_image, base_tiles_dir, map_low_x, map_high_y
-            )
-            valid_icons.extend(area_icons)
-
-        if plane == 0:
-            data = np.asarray(plane_image.convert("RGB")).copy()
-            data[(data == (255, 0, 255)).all(axis=-1)] = (0, 0, 0)
-            plane_image = Image.fromarray(data, mode="RGB")
-            if planes > 1:
-                plane_0_map = make_plane_0_map(plane_image)
-
-        elif plane > 0:
-            data = np.asarray(plane_image.convert("RGBA")).copy()
-            data[:, :, 3] = 255 * (data[:, :, :3] != (255, 0, 255)).all(axis=-1)
-            mask = Image.fromarray(data, mode="RGBA")
-            plane_image = plane_0_map.copy() # type: ignore
-            plane_image.paste(mask, (0, 0), mask)
-
-        for zoom in range(-3, 4):
-            scaling_factor = 2.0**zoom / 2.0**2
-            zoomed_width = int(round(scaling_factor * plane_image.width))
-            zoomed_height = int(round(scaling_factor * plane_image.height))
-            resample = Image.BILINEAR if zoom <= 1 else Image.NEAREST # type: ignore # pylint:disable=E1101
-            zoomed = plane_image.resize((zoomed_width, zoomed_height), resample=resample)
-
-            if zoom >= 0:
-                for x, y, sprite_id in valid_icons:
-                    sprite = icon_sprites[sprite_id]
-                    width, height = sprite.size
-                    mapsquare_x = int(round((x - map_low_x * 64) * PX_PER_TILE * scaling_factor)) - width // 2 - 2
-                    mapsquare_y = (
-                        int(round(((map_high_y + 1) * 64 - y) * PX_PER_TILE * scaling_factor)) - height // 2 - 2
+            try:
+                for region in defn["regionList"]:
+                    plane_image, area_icons = render_region(
+                        plane, region, icons, plane_image, base_tiles_dir, map_low_x, map_high_y
                     )
-                    zoomed.paste(
-                        sprite,
-                        (
-                            mapsquare_x + int(round(256 * scaling_factor)),
-                            int(round(mapsquare_y + 256 * scaling_factor)),
-                        ),
-                        sprite,
-                    )
+                    valid_icons.extend(area_icons)
 
-            low_zoomed_x = int((map_low_x - 1) * scaling_factor + 0.01)
-            high_zoomed_x = int((map_high_x + 0.9 + 1) * scaling_factor + 0.01)
-            low_zoomed_y = int((map_low_y - 1) * scaling_factor + 0.01)
-            high_zoomed_y = int((map_high_y + 0.9 + 1) * scaling_factor + 0.01)
-            for x in range(low_zoomed_x, high_zoomed_x + 1):
-                for y in range(low_zoomed_y, high_zoomed_y + 1):
-                    coord_x = int((x - (map_low_x - 1) * scaling_factor) * 256)
-                    coord_y = int((y - (map_low_y - 1) * scaling_factor) * 256)
-                    cropped = zoomed.crop(
-                        (coord_x, zoomed.size[1] - coord_y - 256, coord_x + 256, zoomed.size[1] - coord_y)
-                    )
+                log_rss("plane-regions-done", map_id=map_id, plane=plane)
 
-                    if not all_black(cropped):
-                        out_path = os.path.join(out_tiles_dir, f"{map_id}/{zoom}/{plane}_{x}_{y}.png")
-                        mkdir_p(out_path)
-                        cropped.save(out_path)
+                if plane == 0:
+                    converted = plane_image.convert("RGB")
+                    try:
+                        data = np.asarray(converted).copy()
+                    finally:
+                        close_image(converted)
+
+                    data[(data == (255, 0, 255)).all(axis=-1)] = (0, 0, 0)
+                    updated_plane_image = Image.fromarray(data, mode="RGB")
+                    close_image(plane_image)
+                    plane_image = updated_plane_image
+                    if planes > 1:
+                        close_image(plane_0_map)
+                        plane_0_map = make_plane_0_map(plane_image)
+
+                elif plane > 0:
+                    converted = plane_image.convert("RGBA")
+                    try:
+                        data = np.asarray(converted).copy()
+                    finally:
+                        close_image(converted)
+
+                    data[:, :, 3] = 255 * (data[:, :, :3] != (255, 0, 255)).all(axis=-1)
+                    mask = Image.fromarray(data, mode="RGBA")
+                    close_image(plane_image)
+                    plane_image = plane_0_map.copy() # type: ignore
+                    plane_image.paste(mask, (0, 0), mask)
+
+                if data is not None:
+                    del data
+                    data = None
+
+                log_rss("plane-compose-done", map_id=map_id, plane=plane)
+
+                for zoom in range(-3, 4):
+                    scaling_factor = 2.0**zoom / 2.0**2
+                    zoomed_width = int(round(scaling_factor * plane_image.width))
+                    zoomed_height = int(round(scaling_factor * plane_image.height))
+                    resample = Image.BILINEAR if zoom <= 1 else Image.NEAREST # type: ignore # pylint:disable=E1101
+                    zoomed = plane_image.resize((zoomed_width, zoomed_height), resample=resample)
+
+                    try:
+                        if zoom >= 0:
+                            for x, y, sprite_id in valid_icons:
+                                sprite = icon_sprites[sprite_id]
+                                width, height = sprite.size
+                                mapsquare_x = int(
+                                    round((x - map_low_x * 64) * PX_PER_TILE * scaling_factor)
+                                ) - width // 2 - 2
+                                mapsquare_y = (
+                                    int(round(((map_high_y + 1) * 64 - y) * PX_PER_TILE * scaling_factor))
+                                    - height // 2
+                                    - 2
+                                )
+                                zoomed.paste(
+                                    sprite,
+                                    (
+                                        mapsquare_x + int(round(256 * scaling_factor)),
+                                        int(round(mapsquare_y + 256 * scaling_factor)),
+                                    ),
+                                    sprite,
+                                )
+
+                        low_zoomed_x = int((map_low_x - 1) * scaling_factor + 0.01)
+                        high_zoomed_x = int((map_high_x + 0.9 + 1) * scaling_factor + 0.01)
+                        low_zoomed_y = int((map_low_y - 1) * scaling_factor + 0.01)
+                        high_zoomed_y = int((map_high_y + 0.9 + 1) * scaling_factor + 0.01)
+                        for x in range(low_zoomed_x, high_zoomed_x + 1):
+                            for y in range(low_zoomed_y, high_zoomed_y + 1):
+                                coord_x = int((x - (map_low_x - 1) * scaling_factor) * 256)
+                                coord_y = int((y - (map_low_y - 1) * scaling_factor) * 256)
+                                cropped = zoomed.crop(
+                                    (coord_x, zoomed.size[1] - coord_y - 256, coord_x + 256, zoomed.size[1] - coord_y)
+                                )
+
+                                try:
+                                    if not all_black(cropped):
+                                        out_path = os.path.join(out_tiles_dir, f"{map_id}/{zoom}/{plane}_{x}_{y}.png")
+                                        mkdir_p(out_path)
+                                        cropped.save(out_path)
+                                finally:
+                                    close_image(cropped)
+                    finally:
+                        close_image(zoomed)
+
+                log_rss("plane-zoom-done", map_id=map_id, plane=plane)
+            finally:
+                if data is not None:
+                    del data
+                close_image(mask)
+                close_image(plane_image)
+                valid_icons.clear()
+                gc.collect()
+                log_rss("plane-cleanup-done", map_id=map_id, plane=plane)
+    finally:
+        close_image(plane_0_map)
+        gc.collect()
+        log_rss("render-map-end", map_id=map_id)
 
 
 def main(select_maps=()):
