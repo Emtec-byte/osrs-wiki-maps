@@ -5,7 +5,7 @@ This repository runs an automated CI/CD pipeline that generates OSRS map assets 
 
 ## 3-Stage Generation Pipeline
 1. **Cache download**: `python scripts/cache.py`
-2. **Base tile generation (Java/Maven build output JAR)**: `java -Xmx6g -Xms2g -jar ./osrs-wiki-maps/target/osrs-wiki-maps-*-shaded.jar`
+2. **Base tile generation (Java/Maven build output JAR)**: `java -Xmx6g -Xms2g -jar ./osrs-wiki-maps/target/osrs-wiki-maps-*-shaded.jar` (the pattern should resolve to exactly one shaded JAR from the current Maven build)
 3. **Final stitching + metadata/icons**: `python scripts/stitch.py`
 
 ## Workflow Triggers

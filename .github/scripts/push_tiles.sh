@@ -12,12 +12,18 @@ SOURCE_ROOT="$(pwd)"
 OUTPUT_DIR="${SOURCE_ROOT}/out/mapgen/versions/${VERSION}/output"
 TARGET_REPO="Emtec-byte/osrs-map-tiles"
 
+if ! [[ "$VERSION" =~ ^[A-Za-z0-9._-]+$ ]]; then
+  echo "Error: Invalid cache version format: ${VERSION}"
+  exit 1
+fi
+
 if [ ! -d "$OUTPUT_DIR" ]; then
-  OUTPUT_DIR="$(find "${SOURCE_ROOT}/out/mapgen/versions" -mindepth 2 -maxdepth 2 -type d -name output | sort | tail -n 1 || true)"
+  echo "Primary output directory not found at $OUTPUT_DIR; searching dynamically..."
+  OUTPUT_DIR="$(find "${SOURCE_ROOT}/out/mapgen/versions" -mindepth 2 -maxdepth 2 -type d -path "*/${VERSION}/output" | head -n 1 || true)"
 fi
 
 if [ -z "${OUTPUT_DIR}" ] || [ ! -d "$OUTPUT_DIR" ]; then
-  echo "Error: Could not find generated output directory."
+  echo "Error: Could not find generated output directory for version ${VERSION}."
   exit 1
 fi
 
@@ -30,7 +36,18 @@ WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "$WORK_DIR"' EXIT
 
 echo "Cloning ${TARGET_REPO}..."
-git clone --depth=1 "https://x-access-token:${GITHUB_TOKEN}@github.com/${TARGET_REPO}.git" "$WORK_DIR/tiles-repo"
+ASKPASS_SCRIPT="$WORK_DIR/git-askpass.sh"
+cat > "$ASKPASS_SCRIPT" <<'EOF'
+#!/usr/bin/env bash
+case "$1" in
+  *Username*) echo "x-access-token" ;;
+  *Password*) echo "${GITHUB_TOKEN}" ;;
+esac
+EOF
+chmod 700 "$ASKPASS_SCRIPT"
+
+export GITHUB_TOKEN
+GIT_ASKPASS="$ASKPASS_SCRIPT" GIT_TERMINAL_PROMPT=0 git clone --depth=1 "https://github.com/${TARGET_REPO}.git" "$WORK_DIR/tiles-repo"
 
 cd "$WORK_DIR/tiles-repo"
 mkdir -p tiles/rendered icons
@@ -44,9 +61,10 @@ rsync -a --delete --checksum "$OUTPUT_DIR/icons/" "./icons/"
 echo "Syncing basemaps metadata..."
 rsync -a --checksum "$OUTPUT_DIR/basemaps.json" "./basemaps.json"
 
-cat > cache-version.json <<EOF
-{"version":"${VERSION}","updated":"$(date -u +"%Y-%m-%dT%H:%M:%SZ")"}
-EOF
+jq -n \
+  --arg version "$VERSION" \
+  --arg updated "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
+  '{version: $version, updated: $updated}' > cache-version.json
 
 git config user.name "github-actions[bot]"
 git config user.email "github-actions[bot]@users.noreply.github.com"

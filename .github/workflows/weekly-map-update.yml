@@ -15,6 +15,8 @@ on:
 jobs:
   generate-and-publish:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
 
     steps:
       - name: Check out repository
@@ -53,11 +55,16 @@ jobs:
         run: |
           set -euo pipefail
 
+          if [ ! -s ./data/versions/version.txt ]; then
+            echo "Error: ./data/versions/version.txt was not created by scripts/cache.py"
+            exit 1
+          fi
+
           CURRENT_VERSION="$(tr -d '\r\n' < ./data/versions/version.txt)"
           REMOTE_VERSION=""
 
           if curl -fsSL "$VERSION_URL" -o /tmp/cache-version.json; then
-            REMOTE_VERSION="$(python3 -c "import json; print(json.load(open('/tmp/cache-version.json', 'r', encoding='utf-8')).get('version', ''))")"
+            REMOTE_VERSION="$(jq -r '.version // ""' /tmp/cache-version.json)"
           else
             echo "cache-version.json not found in tiles repo (likely first run)."
           fi
@@ -80,7 +87,16 @@ jobs:
       - name: Generate base tiles
         if: steps.version_check.outputs.needs_update == 'true'
         timeout-minutes: 120
-        run: java -Xmx6g -Xms2g -jar ./osrs-wiki-maps/target/osrs-wiki-maps-*-shaded.jar
+        run: |
+          set -euo pipefail
+          matches=(./osrs-wiki-maps/target/osrs-wiki-maps-*-shaded.jar)
+          if [ "${#matches[@]}" -ne 1 ]; then
+            echo "Error: expected exactly one shaded JAR, found ${#matches[@]}"
+            ls -1 ./osrs-wiki-maps/target/*-shaded.jar || true
+            exit 1
+          fi
+          JAR_PATH="${matches[0]}"
+          java -Xmx6g -Xms2g -jar "$JAR_PATH"
 
       - name: Stitch final map output
         if: steps.version_check.outputs.needs_update == 'true'
