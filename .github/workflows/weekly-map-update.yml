@@ -17,6 +17,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    env:
+      RESOURCE_MONITOR_INTERVAL_SECONDS: '30'
 
     steps:
       - name: Check out repository
@@ -106,6 +108,8 @@ jobs:
       - name: Generate base tiles
         if: steps.version_check.outputs.needs_update == 'true'
         timeout-minutes: 120
+        env:
+          JAVA_TOOL_OPTIONS: -Dorg.slf4j.simpleLogger.log.net.runelite.cache.fs.Archive=error
         run: |
           set -euo pipefail
           matches=(./osrs-wiki-maps/target/osrs-wiki-maps-*-shaded.jar)
@@ -115,12 +119,18 @@ jobs:
             exit 1
           fi
           JAR_PATH="${matches[0]}"
-          java -Xmx6g -Xms2g -jar "$JAR_PATH"
+          bash .github/scripts/run_with_resource_monitor.sh \
+            "generate-base-tiles" \
+            java -Xmx6g -Xms2g -jar "$JAR_PATH"
 
       - name: Stitch final map output
         if: steps.version_check.outputs.needs_update == 'true'
         timeout-minutes: 120
-        run: python scripts/stitch.py
+        run: |
+          set -euo pipefail
+          bash .github/scripts/run_with_resource_monitor.sh \
+            "stitch-final-map-output" \
+            python scripts/stitch.py
 
       - name: Make push helper executable
         if: steps.version_check.outputs.needs_update == 'true'
