@@ -59,7 +59,7 @@ public class MapExport {
         MapImageDumper dumper = new MapImageDumper(store, xteaKeyManager);
         dumper.setRenderIcons(false);
         dumper.setRenderLabels(false);
-        dumper.setLowMemory(false);
+        dumper.setLowMemory(true);
         dumper.load();
         regionLoader = new RegionLoader(store, xteaKeyManager);
         regionLoader.loadRegions();
