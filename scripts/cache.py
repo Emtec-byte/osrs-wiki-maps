@@ -50,22 +50,24 @@ def get_cache_info() -> tuple[int, str]:
 def download_xteas(cache_id, out_folder):
     keys_path = os.path.join(out_folder, "xteas.json")
 
-    # print("Downloading xteas...")
-    # start = dt.datetime.now()
     response = requests.get(CACHE_URL_BASE + f"/caches/runescape/{cache_id}/keys.json", timeout=30)
-    # end = dt.datetime.now()
-    # print(f"{int((end-start).total_seconds())}s elapsed.\n")
+    response.raise_for_status()
 
     key_list = []
     for xtea in response.json():
-        new_key = {}
-        for key, val in xtea.items():
-            if key == "mapsquare":
-                new_key["region"] = val  # runelite expects "region" not "mapsquare"
-            elif key == "key":
-                new_key["keys"] = val  # runelite expects "keys" not "key"
+        mapsquare = xtea.get("mapsquare")
+        keys = xtea.get("key")
 
-        key_list.append(new_key)
+        # Skip entries without a valid map region or missing key data
+        if mapsquare is None or keys is None:
+            continue
+
+        key_list.append({"region": mapsquare, "keys": keys})
+
+    print(f"Loaded {len(key_list)} XTEA keys")
+
+    if len(key_list) == 0:
+        raise RuntimeError("No XTEA keys were loaded — aborting to prevent downstream failures")
 
     with open(keys_path, "w", encoding="utf-8") as file:
         json.dump(key_list, file)

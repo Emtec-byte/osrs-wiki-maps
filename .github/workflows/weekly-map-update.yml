@@ -47,6 +47,25 @@ jobs:
       - name: Download latest cache
         run: python scripts/cache.py
 
+      - name: Validate XTEA keys
+        run: |
+          set -euo pipefail
+          VERSION="$(tr -d '\r\n' < ./data/versions/version.txt)"
+          XTEAS_PATH="./data/versions/${VERSION}/xteas.json"
+
+          if [ ! -s "$XTEAS_PATH" ]; then
+            echo "Error: $XTEAS_PATH is missing or empty"
+            exit 1
+          fi
+
+          KEY_COUNT="$(python -c "import json,sys; data=json.load(open(sys.argv[1])); print(len(data))" "$XTEAS_PATH")"
+          echo "xteas.json contains $KEY_COUNT keys"
+
+          if [ "$KEY_COUNT" -lt 100 ]; then
+            echo "Error: Expected at least 100 XTEA keys but found $KEY_COUNT — aborting"
+            exit 1
+          fi
+
       - name: Compare cache version with tiles repository
         id: version_check
         env:
