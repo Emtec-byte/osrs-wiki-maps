@@ -25,26 +25,41 @@ def make_output_folder(date_str: str, version_dir: str) -> tuple[str, str]:
     return version_name, out_folder
 
 
-def get_cache_info() -> tuple[int, str]:
+def get_cache_info() -> tuple[int, str, int | None]:
+    MIN_VALID_KEYS = 100
     cache_list = requests.get(CACHE_URL_BASE + "/caches.json", timeout=15).json()
     latest = dt.datetime(1970, 1, 1, tzinfo=UTC)
     cache_id = -1
+    build_number = None
     for cache in cache_list:
-        if cache["scope"] != "runescape" or cache["game"] != "oldschool" or cache["environment"] != "live":
+        if (cache["scope"] != "runescape"
+                or cache["game"] != "oldschool"
+                or cache["environment"] != "live"
+                or cache.get("language", "en") != "en"):
             continue
 
         timestamp = cache["timestamp"]
         if not timestamp:
             continue
 
+        valid_keys = cache.get("valid_keys")
+        if valid_keys is None or valid_keys < MIN_VALID_KEYS:
+            continue
+
         date = isoparse(timestamp)
         if date > latest:
             latest = date
             cache_id = cache["id"]
+            builds = cache.get("builds") or []
+            build_number = builds[0].get("major") if builds else None
+
+    if cache_id == -1:
+        raise RuntimeError("No suitable OSRS cache found with sufficient XTEA keys")
 
     date_str = latest.strftime("%Y-%m-%d")
-    # print(f"Found cache {cache_id} from {date_str}\n")
-    return cache_id, date_str
+    print(f"Selected cache id={cache_id}, build={build_number}, "
+          f"timestamp={latest.isoformat()}, valid_keys filter>={MIN_VALID_KEYS}")
+    return cache_id, date_str, build_number
 
 
 def download_xteas(cache_id, out_folder):
@@ -53,8 +68,11 @@ def download_xteas(cache_id, out_folder):
     response = requests.get(CACHE_URL_BASE + f"/caches/runescape/{cache_id}/keys.json", timeout=30)
     response.raise_for_status()
 
+    raw_entries = response.json()
+    print(f"Fetched {len(raw_entries)} raw key entries from OpenRS2")
+
     key_list = []
-    for xtea in response.json():
+    for xtea in raw_entries:
         mapsquare = xtea.get("mapsquare")
         keys = xtea.get("key")
 
@@ -64,7 +82,7 @@ def download_xteas(cache_id, out_folder):
 
         key_list.append({"region": mapsquare, "keys": keys})
 
-    print(f"Loaded {len(key_list)} XTEA keys")
+    print(f"Loaded {len(key_list)} valid XTEA keys (filtered from {len(raw_entries)} raw entries)")
 
     if len(key_list) == 0:
         raise RuntimeError("No XTEA keys were loaded — aborting to prevent downstream failures")
@@ -76,7 +94,7 @@ def download_xteas(cache_id, out_folder):
 def download_cache(cache_id, out_folder):
     # print("Downloading cache...")
     # start = dt.datetime.now()
-    raw = requests.get(CACHE_URL_BASE + f"/caches/runescape/{cache_id}/disk.zip", timeout=60).content
+    raw = requests.get(CACHE_URL_BASE + f"/caches/runescape/{cache_id}/disk.zip", timeout=300).content
     # end = dt.datetime.now()
     # print(f"{int((end-start).total_seconds())}s elapsed.\n")
 
@@ -94,7 +112,7 @@ def write_version_txt(version_name, cache_dir):
 
 
 def download():
-    cache_id, date_str = get_cache_info()
+    cache_id, date_str, build_number = get_cache_info()
     cache_dir = "./data/versions"
     version_name, out_folder = make_output_folder(date_str, cache_dir)
 
