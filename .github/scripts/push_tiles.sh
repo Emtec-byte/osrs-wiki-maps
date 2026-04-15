@@ -34,20 +34,10 @@ fi
 
 WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "$WORK_DIR"' EXIT
+AUTH_REMOTE_URL="https://x-access-token:${GITHUB_TOKEN}@github.com/${TARGET_REPO}.git"
 
 echo "Cloning ${TARGET_REPO}..."
-ASKPASS_SCRIPT="$WORK_DIR/git-askpass.sh"
-cat > "$ASKPASS_SCRIPT" <<'EOF'
-#!/usr/bin/env bash
-case "$1" in
-  *Username*) echo "x-access-token" ;;
-  *Password*) echo "${GITHUB_TOKEN}" ;;
-esac
-EOF
-chmod 700 "$ASKPASS_SCRIPT"
-
-export GITHUB_TOKEN
-GIT_ASKPASS="$ASKPASS_SCRIPT" GIT_TERMINAL_PROMPT=0 git clone --depth=1 "https://github.com/${TARGET_REPO}.git" "$WORK_DIR/tiles-repo"
+git clone --depth=1 "$AUTH_REMOTE_URL" "$WORK_DIR/tiles-repo"
 
 cd "$WORK_DIR/tiles-repo"
 mkdir -p tiles/rendered icons
@@ -76,6 +66,7 @@ if git diff --cached --quiet; then
 fi
 
 git commit -m "chore: update map tiles for OSRS version ${VERSION}"
+git remote set-url origin "$AUTH_REMOTE_URL"
 git push origin main
 
 echo "Map tiles updated for version ${VERSION}."
