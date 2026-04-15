@@ -1,4 +1,19 @@
 # osrs-wiki-maps
+
+Fork of the OSRS map generation toolkit used to download the live cache, generate base tiles, and stitch final map assets.
+
+For setup, CI/CD configuration, forking instructions, publishing to your own tiles repository, and consuming the generated tiles in your own project, see [Automated OSRS Map Tile Pipeline Setup](./.github/workflows/SETUP-README.md).
+
+For creating the token and adding it as a GitHub Actions secret, see [Token Setup](./.github/workflows/TOKEN-SETUP.md).
+
+Local generated output is written under `./out/mapgen/versions/{version_name}/output`.
+
+---
+
+
+## original README
+
+## osrs-wiki-maps
 A set of tools for generating map images for the OSRS wiki.
 
 ## Setup
